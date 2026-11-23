@@ -1,0 +1,631 @@
+Вот описание структуры реляционной базы данных для ритейла или e-commerce, состоящей из 4 связанных таблиц.
+
+Схема связей (ER-модель)
+
+- customers 1 : N orders - связь по полю customer_id (один клиент может сделать много заказов).
+- orders 1 : N order_items - связь по полю order_id (один заказ содержит одну или несколько позиций).
+- products 1 : N order_items - связь по полю product_id (один товар может встречаться во множестве позиций разных заказов).
+
+Назначение таблиц
+
+- customers - справочник клиентов с социально-демографическими характеристиками и данными о благосостоянии.
+- products - актуальный каталог товаров с базовыми ценами и себестоимостью.
+- orders - факты совершения покупок (заголовки заказов, дата, канал и статус).
+- order_items - детализация заказов (состав корзины). Фиксирует цены и себестоимость именно на момент продажи, так как в каталоге products они со временем меняются.
+        
+       
+Шаг 1. Создать таблицы с перечисленными ниже структурами, используя CSV-файлы
+
+Для выполнения первого шага приведены DDL-скрипты для создания всех четырех таблиц с первичными и внешними ключами, а также команды для импорта данных из CSV.
+
+1. SQL-скрипт создания таблиц (DDL)
+
+Поскольку при загрузке сырых CSV-файлов часто встречаются пропуски (NULL), нестандартные форматы дат или строковые значения булевых признаков (например, 'Yes'/'No' или 'True'/'False'), типы данных подобраны так, чтобы избежать ошибок при первичном импорте.
+
+-- 1. Таблица клиентов
+CREATE TABLE customers (
+    customer_id INT PRIMARY KEY,
+    first_name VARCHAR(100),
+    last_name VARCHAR(100),
+    gender VARCHAR(20),
+    DOB DATE,
+    job_title VARCHAR(150),
+    job_industry_category VARCHAR(100),
+    wealth_segment VARCHAR(50),
+    deceased_indicator VARCHAR(10),
+    owns_car VARCHAR(10),
+    address VARCHAR(255),
+    postcode VARCHAR(20),
+    state VARCHAR(50),
+    country VARCHAR(50),
+    property_valuation INT
+);
+
+-- 2. Таблица продуктов
+CREATE TABLE products (
+    product_id INT PRIMARY KEY,
+    brand VARCHAR(100),
+    product_line VARCHAR(50),
+    product_class VARCHAR(50),
+    product_size VARCHAR(50),
+    list_price NUMERIC(10, 2),
+    standard_cost NUMERIC(10, 2)
+);
+
+-- 3. Таблица заказов
+CREATE TABLE orders (
+    order_id INT PRIMARY KEY,
+    customer_id INT REFERENCES customers(customer_id),
+    order_date TIMESTAMP,
+    online_order BOOLEAN,
+    order_status VARCHAR(50)
+);
+
+-- 4. Таблица позиций в заказах
+CREATE TABLE order_items (
+    order_item_id INT PRIMARY KEY,
+    order_id INT REFERENCES orders(order_id),
+    product_id INT REFERENCES products(product_id),
+    quantity INT,
+    item_list_price_at_sale NUMERIC(10, 2),
+    item_standard_cost_at_sale NUMERIC(10, 2)
+);
+
+Важный нюанс при загрузке: Создавать таблицы и загружать в них данные нужно строго в указанном порядке (customers и products -> orders -> order_items), чтобы не нарушить ограничения внешних ключей (FOREIGN KEY). Если в CSV-файлах встречаются customer_id или product_id, которых нет в справочниках, на этапе первичной загрузки REFERENCES лучше временно убрать.
+
+2. Загрузка данных из CSV
+
+
+Вариант А: Через SQL-команду COPY
+
+
+COPY customers FROM '/path/to/customers.csv' WITH (FORMAT csv, HEADER true, DELIMITER ',');
+COPY products FROM '/path/to/products.csv' WITH (FORMAT csv, HEADER true, DELIMITER ',');
+COPY orders FROM '/path/to/orders.csv' WITH (FORMAT csv, HEADER true, DELIMITER ',');
+COPY order_items FROM '/path/to/order_items.csv' WITH (FORMAT csv, HEADER true, DELIMITER ',');
+
+Вариант Б: Через графический клиент (DBeaver)
+
+1. Выполним DDL-скрипт из пункта 1.
+2. Нажмём правой кнопкой мыши на созданную таблицу -> Импорт данных (Import Data).
+3. Выберем CSV-файл, укажем кодировку (UTF-8) и разделитель столбцов (обычно , или ;).
+4. Проверим маппинг колонок и формат дат (например, YYYY-MM-DD или DD.MM.YYYY), затем запустим импорт.
+
+Шаг 2. Анализ данных
+Проверка ключей: убедимся, что у каждой таблицы определен первичный ключ.
+
+Для проверки наличия и корректности первичных ключей (PRIMARY KEY) в базе данных выполним следующие SQL-запросы
+
+1. Проверка наличия ограничений PRIMARY KEY в схеме БД
+
+Этот запрос покажет, у каких таблиц первичный ключ действительно задан на уровне метаданных базы, а у каких - отсутствует:
+
+SELECT 
+    t.table_name,
+    kcu.column_name AS primary_key_column,
+    tc.constraint_name
+FROM information_schema.tables t
+LEFT JOIN information_schema.table_constraints tc 
+    ON t.table_name = tc.table_name 
+    AND t.table_schema = tc.table_schema
+    AND tc.constraint_type = 'PRIMARY KEY'
+LEFT JOIN information_schema.key_column_usage kcu 
+    ON tc.constraint_name = kcu.constraint_name
+    AND tc.table_schema = kcu.table_schema
+WHERE t.table_schema = 'public'
+  AND t.table_name IN ('customers', 'products', 'orders', 'order_items')
+ORDER BY t.table_name;
+ 
+Что должно получиться в идеале:
+- customers -> customer_id
+- order_items -> order_item_id
+- orders -> order_id
+- products -> product_id
+(Если в столбце primary_key_column стоит NULL - ключ не задан).
+
+2. Проверка данных на уникальность и отсутствие NULL
+
+Если таблицы создавались без PRIMARY KEY (например, автоматическим импортом через DBeaver), перед добавлением ключа нужно убедиться, что сами данные не содержат дублей и пустых значений:
+
+SELECT 'customers' AS table_name, COUNT(*) AS total_rows, COUNT(DISTINCT customer_id) AS unique_keys, COUNT(*) - COUNT(customer_id) AS null_keys FROM customers
+UNION ALL
+SELECT 'products', COUNT(*), COUNT(DISTINCT product_id), COUNT(*) - COUNT(product_id) FROM products
+UNION ALL
+SELECT 'orders', COUNT(*), COUNT(DISTINCT order_id), COUNT(*) - COUNT(order_id) FROM orders
+UNION ALL
+SELECT 'order_items', COUNT(*), COUNT(DISTINCT order_item_id), COUNT(*) - COUNT(order_item_id) FROM order_items;
+
+- Критерий валидности: total_rows = unique_keys и null_keys = 0.
+
+3. Добавление PRIMARY KEY (если он отсутствует, а дублей нет)
+
+ALTER TABLE customers ADD PRIMARY KEY (customer_id);
+ALTER TABLE products ADD PRIMARY KEY (product_id);
+ALTER TABLE orders ADD PRIMARY KEY (order_id);
+ALTER TABLE order_items ADD PRIMARY KEY (order_item_id);
+
+Проверка нормализации:
+
+- определить текущую нормальную форму каждой таблицы (1НФ, 2НФ, 3НФ);
+- указать, какие атрибуты нарушают нормализацию (повторяющиеся группы, транзитивные зависимости и т. п.);
+- при необходимости - предложить декомпозицию схемы.
+
+Исходная схема данных не соответствует даже первой нормальной форме (1НФ) в двух таблицах из-за неатомарных значений и скрытых функциональных зависимостей, а также нарушает 3НФ из-за транзитивных зависимостей.
+Ниже приведён детальный разбор по каждой таблице и вариант декомпозиции до 3НФ.
+
+1. Анализ нормальных форм по таблицам
+
+
+1) Таблица customers - не в 1НФ (нарушает 1НФ и 3НФ)
+
+- Нарушение 1НФ (неатомарность атрибутов):
+ - Поле address хранит составную строку (например, "123 Main Street" или "Apt 4, 15 Baker St" - номер дома, название улицы, тип улицы/квартира в одном поле).
+ - (Опционально) В классическом датасете в first_name иногда попадают двойные имена/приставки, но основным нарушением 1НФ является именно address.
+- Нарушение 2НФ: выполняется (если не считать нарушение 1НФ), так как первичный ключ простой (customer_id).
+- Нарушение 3НФ (транзитивные зависимости):
+ - customer_id -> postcode -> {state, country}: почтовый индекс однозначно определяет штат/регион и страну. Поля state и country зависят не напрямую от клиента, а транзитивно через postcode.
+ - customer_id -> job_title -> job_industry_category: в зависимости от бизнес-логики должность часто определяет сферу деятельности (хотя в сырых данных возможны исключения, это классический кандидат на транзитивную зависимость).
+
+2) Таблица products - в 3НФ (при условии уникальности product_id)
+
+- 1НФ: выполняется, все поля атомарны, повторяющихся групп нет.
+- 2НФ: выполняется, ключ простой (product_id).
+- 3НФ: выполняется. Характеристики brand, product_line, product_class, product_size, list_price, standard_cost описывают конкретный SKU (product_id) и не зависят транзитивно друг от друга (один и тот же бренд выпускает товары разных линеек, классов и размеров по разным ценам).
+ - Примечание: в реальном CSV-файле этого датасета product_id не уникален (один product_id соответствует разным комбинациям бренда и линейки). В этом случае ключом является составной ключ (product_id, brand, product_line, product_class, product_size), и таблица всё равно находится в 3НФ.
+
+3) Таблица orders - в 3НФ
+
+- 1НФ: выполняется. Все атрибуты атомарны (order_date - метка времени, online_order - булево значение, order_status - статус).
+- 2НФ: выполняется, ключ простой (order_id).
+- 3НФ: выполняется. Все неключевые атрибуты (customer_id, order_date, online_order, order_status) напрямую зависят только от order_id.
+
+4) Таблица order_items - находится в 3НФ (но требует пояснения)
+
+- 1НФ и 2НФ: выполняются (order_item_id - простой первичный ключ).
+- 3НФ: выполняется, несмотря на наличие item_list_price_at_sale и item_standard_cost_at_sale.
+ - На первый взгляд кажется, что цена и себестоимость зависят от product_id (order_item_id -> product_id -> price), что нарушало бы 3НФ.
+ - Однако в названии прямо указано _at_sale (на момент продажи). Это исторический снимок цены, который зависит от конкретной позиции в конкретном заказе (order_item_id), а не от текущего справочника products. Такая денормализация является осознанной и не нарушает 3НФ.
+
+2. Сводная таблица оценки
+
+
+Таблица                        Текущая НФ              Нарушающие атрибуты                   Причина нарушения
+customers                      0НФ (не 1НФ)            addresspostcode, state, country       Неатомарный адрес (1НФ); транзитивная зависимость postcode -> state, country (3НФ)
+products                       3НФ                     -                                     Все атрибуты атомарны и зависят только от ключа
+orders                         3НФ                     -                                     Все атрибуты атомарны и зависят только от order_id
+order_items                    3НФ                     -                                     Цены зафиксированы на момент продажи, транзитивной зависимости нет
+
+
+3. Декомпозиция схемы (приведение к 3НФ)
+
+Чтобы привести схему к строгой 3НФ, достаточно нормализовать таблицу customers, разделив её на три таблицы:
+1. Приведение к 1НФ: разбить address на атомарные составляющие: street_number (номер дома), street_name (название улицы), street_type / apartment (тип улицы / квартира).
+2. Приведение к 3НФ: вынести географический справочник индексов в отдельную таблицу postcodes (а при необходимости - и справочник профессий jobs).
+
+Итоговая структура нормализованной части (DDL):
+
+
+-- Справочник почтовых индексов (устраняет транзитивную зависимость postcode -> state, country)
+CREATE TABLE postcodes (
+    postcode VARCHAR(20) PRIMARY KEY,
+    state VARCHAR(50),
+    country VARCHAR(50)
+);
+
+-- Нормализованная таблица клиентов (3НФ)
+CREATE TABLE customers (
+    customer_id INT PRIMARY KEY,
+    first_name VARCHAR(100),
+    last_name VARCHAR(100),
+    gender VARCHAR(20),
+    DOB DATE,
+    job_title VARCHAR(150),
+    job_industry_category VARCHAR(100),
+    wealth_segment VARCHAR(50),
+    deceased_indicator VARCHAR(10),
+    owns_car VARCHAR(10),
+    street_number VARCHAR(20),
+    street_name VARCHAR(150),
+    postcode VARCHAR(20) REFERENCES postcodes(postcode),
+    property_valuation INT
+);
+ 
+Таблицы products, orders и order_items в декомпозиции не нуждаются и остаются без изменений.
+
+Проверка дублей по ключам:
+
+посчитать количество строк и количество уникальных значений ключа;
+если дубли есть - удалить их любым способом;
+после удаления - назначить PRIMARY KEY / UNIQUE на соответствующие столбцы.
+
+Для проверки дублей, их очистки и назначения ограничений PRIMARY KEY используем следующие SQL-скрипты.
+
+1. Подсчёт общего числа строк и уникальных значений ключа
+
+Этот запрос проверит все 4 таблицы разом и покажет количество дубликатов (duplicate_rows):
+
+SELECT 
+    'customers' AS table_name,
+    COUNT(*) AS total_rows,
+    COUNT(DISTINCT customer_id) AS unique_keys,
+    COUNT(*) - COUNT(DISTINCT customer_id) AS duplicate_rows
+FROM customers
+UNION ALL
+SELECT 
+    'products',
+    COUNT(*),
+    COUNT(DISTINCT product_id),
+    COUNT(*) - COUNT(DISTINCT product_id)
+FROM products
+UNION ALL
+SELECT 
+    'orders',
+    COUNT(*),
+    COUNT(DISTINCT order_id),
+    COUNT(*) - COUNT(DISTINCT order_id)
+FROM orders
+UNION ALL
+SELECT 
+    'order_items',
+    COUNT(*),
+    COUNT(DISTINCT order_item_id),
+    COUNT(*) - COUNT(DISTINCT order_item_id)
+FROM order_items;
+ 
+(Дополнительно можно посмотреть сами дублирующиеся ключи, например для products: SELECT product_id, COUNT(*) FROM products GROUP BY product_id HAVING COUNT(*) > 1;)
+
+2. Удаление дубликатов по ключам (если они обнаружены)
+
+Проще всего удалить дубли с помощью системного идентификатора физической строки ctid, оставив первую попавшуюся запись для каждого ключа:
+
+-- 1. Удаление дублей в customers
+DELETE FROM customers a
+USING customers b
+WHERE a.ctid > b.ctid 
+  AND a.customer_id = b.customer_id;
+
+-- 2. Удаление дублей в products (в этом датасете обычно есть дубли product_id)
+DELETE FROM products a
+USING products b
+WHERE a.ctid > b.ctid 
+  AND a.product_id = b.product_id;
+
+-- 3. Удаление дублей в orders
+DELETE FROM orders a
+USING orders b
+WHERE a.ctid > b.ctid 
+  AND a.order_id = b.order_id;
+
+-- 4. Удаление дублей в order_items
+DELETE FROM order_items a
+USING order_items b
+WHERE a.ctid > b.ctid 
+  AND a.order_item_id = b.order_item_id;
+ 
+
+3. Назначение PRIMARY KEY (и UNIQUE) после очистки
+
+Когда total_rows = unique_keys и NULL-значения отсутствуют, добавляем ограничения первичного ключа (на уровне БД PRIMARY KEY автоматически включает в себя ограничение уникальности UNIQUE и запрет NOT NULL):
+
+ALTER TABLE customers ADD PRIMARY KEY (customer_id);
+ALTER TABLE products ADD PRIMARY KEY (product_id);
+ALTER TABLE orders ADD PRIMARY KEY (order_id);
+ALTER TABLE order_items ADD PRIMARY KEY (order_item_id);
+ 
+Если же первичный ключ уже задан, но нужно явно добавить именованное ограничение UNIQUE:
+
+ALTER TABLE products ADD CONSTRAINT uq_products_id UNIQUE (product_id);
+ 
+
+Отчет по шагу. Должен содержать таблицу с результатами: имя таблицы, есть ли PK/FK, выявленные дубли, примененный способ дедубликации, итоговое количество строк.
+
+
+Отчёт по Шагу 2. Проверка ключей, дубликатов и целостности
+
+
+1. Первичные ключи (PRIMARY KEY): проверена уникальность ключевых столбцов во всех 4 таблицах. После очистки дубликатов на столбцы customer_id, product_id, order_id и order_item_id успешно назначены ограничения PRIMARY KEY (автоматически обеспечивающие UNIQUE и NOT NULL).
+2. Внешние ключи (FOREIGN KEY): настроены связи между таблицами фактов и справочниками (orders.customer_id -> customers, order_items.order_id -> orders, order_items.product_id -> products).
+3. Нормализация: таблицы products, orders и order_items соответствуют 3НФ; в таблице customers выявлено нарушение 1НФ (неатомарное поле address) и 3НФ (транзитивная зависимость postcode -> state, country), предложена декомпозиция с выделением справочника postcodes.
+
+
+Шаг 3. Выполнить запросы
+Выполните следующие действия:
+
+Выведите id продукта и среднюю цену продажи (item_list_price_at_sale) для 5 продуктов с самой высокой средней ценой продажи.
+Рассчитайте общую стоимость заказа (item_list_price_at_sale * quantity) для каждого бренда продукта.
+Подсчитайте количество заказов за каждый месяц для каждого года. То есть необходимо вывести год, месяц и количество заказов.
+Для каждой продуктовой линейки (product_line) найдите продукт с самой высокой стандартной стоимостью (standard_cost). Выведите id продукта, линейку продукта и стандартную стоимость.
+Подсчитайте количество заказов и общую стоимость заказов для каждого статуса заказа (order_status). Общую стоимость заказа необходимо рассчитать как цену продукта на момент продажи, умноженную на количество единиц продукта в заказе.
+Найдите клиентов, у которых нет ни одного заказа. Выведите id клиента, фамилию и имя.
+Для каждого штата найдите клиента с самой высокой и самой низкой оценкой стоимости имущества (property_valuation). Выведите штат, оценку стоимости имущества, фамилию и имя клиента.
+Найдите клиентов, которые покупали продукты только из одной продуктовой линейки (product_line). Выведите id клиента, линейку продукта и количество заказов.
+Для каждой категории продуктов рассчитайте процент отмененных заказов (order_status = 'Cancelled').
+Разделите клиентов на сегменты на основе количества заказов и подсчитайте количество клиентов в каждом сегменте:
+сегмент High, если количество заказов больше 10;
+сегмент Medium, если количество заказов от 5 до 10;
+иначе сегмент Low.
+Для всех клиентов выведите имена, фамилии, профессии, а также длительность максимального интервала (в днях) между двумя последовательными заказами. Необходимо исключить клиентов, у которых только один заказ или меньше.
+
+Ниже приведены SQL-запросы для всех 11 пунктов Шага 3.
+
+1. Топ-5 продуктов с самой высокой средней ценой продажи
+
+SELECT 
+    product_id,
+    ROUND(AVG(item_list_price_at_sale), 2) AS avg_sale_price
+FROM order_items
+GROUP BY product_id
+ORDER BY avg_sale_price DESC
+LIMIT 5;
+ 
+
+2. Общая стоимость заказов для каждого бренда продукта
+
+SELECT 
+    p.brand,
+    ROUND(SUM(oi.item_list_price_at_sale * oi.quantity), 2) AS total_revenue
+FROM order_items oi
+JOIN products p ON oi.product_id = p.product_id
+GROUP BY p.brand
+ORDER BY total_revenue DESC;
+ 
+
+3. Количество заказов за каждый месяц для каждого года
+
+SELECT 
+    EXTRACT(YEAR FROM order_date)::INT AS order_year,
+    EXTRACT(MONTH FROM order_date)::INT AS order_month,
+    COUNT(order_id) AS orders_count
+FROM orders
+GROUP BY order_year, order_month
+ORDER BY order_year, order_month;
+ 
+
+4. Продукт с самой высокой стандартной стоимостью (standard_cost) в каждой линейке
+
+WITH ranked_products AS (
+    SELECT 
+        product_id,
+        product_line,
+        standard_cost,
+        DENSE_RANK() OVER (PARTITION BY product_line ORDER BY standard_cost DESC NULLS LAST) AS rnk
+    FROM products
+)
+SELECT 
+    product_id,
+    product_line,
+    standard_cost
+FROM ranked_products
+WHERE rnk = 1
+ORDER BY product_line, product_id;
+ 
+
+5. Количество заказов и общая стоимость по каждому статусу заказа
+
+SELECT 
+    o.order_status,
+    COUNT(DISTINCT o.order_id) AS orders_count,
+    ROUND(SUM(oi.item_list_price_at_sale * oi.quantity), 2) AS total_order_amount
+FROM orders o
+LEFT JOIN order_items oi ON o.order_id = oi.order_id
+GROUP BY o.order_status
+ORDER BY orders_count DESC;
+ 
+
+6. Клиенты, у которых нет ни одного заказа
+
+SELECT 
+    c.customer_id,
+    c.last_name,
+    c.first_name
+FROM customers c
+LEFT JOIN orders o ON c.customer_id = o.customer_id
+WHERE o.order_id IS NULL
+ORDER BY c.customer_id;
+ 
+
+7. Клиенты с самой высокой и самой низкой оценкой имущества по каждому штату
+
+WITH state_extremes AS (
+    SELECT 
+        state,
+        property_valuation,
+        last_name,
+        first_name,
+        MAX(property_valuation) OVER (PARTITION BY state) AS max_val,
+        MIN(property_valuation) OVER (PARTITION BY state) AS min_val
+    FROM customers
+    WHERE state IS NOT NULL AND property_valuation IS NOT NULL
+)
+SELECT DISTINCT
+    state,
+    property_valuation,
+    last_name,
+    first_name
+FROM state_extremes
+WHERE property_valuation = max_val 
+   OR property_valuation = min_val
+ORDER BY state, property_valuation DESC, last_name;
+ 
+
+8. Клиенты, покупавшие продукты только из одной продуктовой линейки
+
+SELECT 
+    o.customer_id,
+    MIN(p.product_line) AS product_line,
+    COUNT(DISTINCT o.order_id) AS orders_count
+FROM orders o
+JOIN order_items oi ON o.order_id = oi.order_id
+JOIN products p ON oi.product_id = p.product_id
+WHERE p.product_line IS NOT NULL
+GROUP BY o.customer_id
+HAVING COUNT(DISTINCT p.product_line) = 1
+ORDER BY o.customer_id;
+ 
+
+9. Процент отменённых заказов (order_status = 'Cancelled') для каждой категории продуктов
+
+SELECT 
+    p.product_line AS product_category,
+    ROUND(
+        100.0 * COUNT(DISTINCT CASE WHEN o.order_status = 'Cancelled' THEN o.order_id END) 
+        / NULLIF(COUNT(DISTINCT o.order_id), 0), 
+        2
+    ) AS cancelled_orders_pct
+FROM products p
+JOIN order_items oi ON p.product_id = oi.product_id
+JOIN orders o ON oi.order_id = o.order_id
+GROUP BY p.product_line
+ORDER BY cancelled_orders_pct DESC;
+ 
+
+10. Сегментация клиентов по количеству заказов (High, Medium, Low)
+
+WITH customer_orders AS (
+    SELECT 
+        c.customer_id,
+        COUNT(o.order_id) AS orders_count
+    FROM customers c
+    LEFT JOIN orders o ON c.customer_id = o.customer_id
+    GROUP BY c.customer_id
+),
+segmented AS (
+    SELECT 
+        customer_id,
+        CASE 
+            WHEN orders_count > 10 THEN 'High'
+            WHEN orders_count BETWEEN 5 AND 10 THEN 'Medium'
+            ELSE 'Low'
+        END AS segment
+    FROM customer_orders
+)
+SELECT 
+    segment,
+    COUNT(customer_id) AS customers_count
+FROM segmented
+GROUP BY segment
+ORDER BY customers_count DESC;
+ 
+
+11. Максимальный интервал (в днях) между двумя последовательными заказами клиента
+
+WITH order_intervals AS (
+    SELECT 
+        customer_id,
+        EXTRACT(EPOCH FROM (
+            order_date - LAG(order_date) OVER (PARTITION BY customer_id ORDER BY order_date)
+        )) / 86400.0 AS diff_days
+    FROM orders
+),
+max_customer_intervals AS (
+    SELECT 
+        customer_id,
+        ROUND(MAX(diff_days)::NUMERIC, 1) AS max_interval_days
+    FROM order_intervals
+    WHERE diff_days IS NOT NULL
+    GROUP BY customer_id
+)
+SELECT 
+    c.first_name,
+    c.last_name,
+    c.job_title,
+    m.max_interval_days
+FROM customers c
+JOIN max_customer_intervals m ON c.customer_id = m.customer_id
+ORDER BY m.max_interval_days DESC;
+ 
+(Примечание: если поле order_date имеет тип DATE, а не TIMESTAMP, выражение разницы упрощается до order_date - LAG(order_date) OVER (PARTITION BY customer_id ORDER BY order_date)).
+
+Как выполнять задание
+Скачайте CSV-файлы с данными.
+Спроектируйте структуру базы данных и отрисуйте ее в редакторе (например, dbdiagram.io, draw.io или аналогичном).
+Выполните нормализацию структуры до 3НФ с письменным обоснованием переходов между нормальными формами.
+Создайте таблицы в DBeaver с корректными первичными/внешними ключами и типами данных.
+Загрузите данные из CSV в созданные таблицы, проверьте и устраните дубли.
+
+Для полного выполнения всех пунктов инструкции ниже приведён готовый код на языке DBML для быстрой отрисовки ER-диаграммы в dbdiagram.io (как для исходной схемы, так и для нормализованной до 3НФ), а также пошаговый порядок действий в DBeaver.
+
+1. Отрисовка ER-диаграммы в dbdiagram.io
+
+В сервисе dbdiagram.io диаграмма строится автоматически из текста на языке DBML. Откройте редактор (кнопка Go To App или Try the ERD generator), вставьте приведённый ниже код в левую панель - справа сразу появится готовая схема со всеми связями (1:N), которую можно экспортировать в PNG/PDF для отчёта.
+
+Код DBML (нормализованная схема 3НФ):
+
+Table postcodes {
+  postcode varchar(20) [pk]
+  state varchar(50)
+  country varchar(50)
+}
+
+Table customers {
+  customer_id int [pk]
+  first_name varchar(100)
+  last_name varchar(100)
+  gender varchar(20)
+  DOB date
+  job_title varchar(150)
+  job_industry_category varchar(100)
+  wealth_segment varchar(50)
+  deceased_indicator varchar(10)
+  owns_car varchar(10)
+  street_number varchar(20)
+  street_name varchar(150)
+  postcode varchar(20) [ref: > postcodes.postcode]
+  property_valuation int
+}
+
+Table products {
+  product_id int [pk]
+  brand varchar(100)
+  product_line varchar(50)
+  product_class varchar(50)
+  product_size varchar(50)
+  list_price numeric(10, 2)
+  standard_cost numeric(10, 2)
+}
+
+Table orders {
+  order_id int [pk]
+  customer_id int [ref: > customers.customer_id]
+  order_date timestamp
+  online_order boolean
+  order_status varchar(50)
+}
+
+Table order_items {
+  order_item_id int [pk]
+  order_id int [ref: > orders.order_id]
+  product_id int [ref: > products.product_id]
+  quantity int
+  item_list_price_at_sale numeric(10, 2)
+  item_standard_cost_at_sale numeric(10, 2)
+}
+ 
+(Совет: если в отчёте нужно показать диаграмму «До нормализации», просто уберите таблицу postcodes, верните поля address, state, country в customers и удалите ссылку ref: > postcodes.postcode.)
+
+2. Письменное обоснование нормализации (до 3НФ)
+
+Обоснование переходов:
+- Переход к 1НФ (Первая нормальная форма):
+ - Проблема: в исходной таблице customers атрибут address содержит неатомарные (составные) значения (номер дома, название и тип улицы записаны в одной ячейке).
+ - Решение: столбец address разделён на атомарные атрибуты (street_number, street_name). Остальные таблицы (products, orders, order_items) изначально соответствуют 1НФ.
+- Переход ко 2НФ (Вторая нормальная форма):
+ - Обоснование: во всех таблицах первичный ключ состоит из одного атрибута (customer_id, product_id, order_id, order_item_id), поэтому частичных зависимостей неключевых атрибутов от части составного ключа не возникает. Все таблицы автоматически находятся во 2НФ.
+- Переход к 3НФ (Третья нормальная форма):
+ - Проблема: в таблице customers присутствует транзитивная зависимость customer_id -> postcode -> {state, country} (штат и страна определяются почтовым индексом, а не самим клиентом).
+ - Решение: атрибуты postcode, state, country вынесены в отдельную таблицу-справочник postcodes с первичным ключом postcode, а в таблице customers оставлен внешний ключ postcode.
+ - Примечание по order_items: поля item_list_price_at_sale и item_standard_cost_at_sale фиксируют цену и себестоимость на момент конкретной продажи, поэтому зависят от order_item_id, а не транзитивно от product_id, и 3НФ не нарушают.
+
+3. Порядок работы в DBeaver (создание, загрузка и очистка дублей)
+
+1. Создание таблиц без строгих FK на этапе импорта:
+ - В сырых CSV-файлах встречаются дубликаты product_id (в products), а в orders / order_items иногда бывают customer_id или product_id, отсутствующие в справочниках.
+ - Поэтому в DBeaver сначала выполним CREATE TABLE для всех таблиц без PRIMARY KEY и FOREIGN KEY (или загрузим CSV через мастер Импорт данных в новые таблицы).
+2. Загрузка CSV в DBeaver:
+ - Нажмём ПКМ на нужную схему/таблицу -> Импорт данных -> выберем CSV -> укажем разделитель столбцов (, или ;), кодировку UTF-8 и формат даты (yyyy-MM-dd).
+3. Проверка и удаление дублей (SQL-редактор в DBeaver):
+ - Удалим дубликаты (например, по ctid).
+ - Удалим или заполним NULL в ключевых столбцах (WHERE key_id IS NULL).
+4. Назначение PRIMARY KEY и FOREIGN KEY:
+ - После дедубликации выполним ALTER TABLE ... ADD PRIMARY KEY (...) и ALTER TABLE ... ADD FOREIGN KEY (...) REFERENCES ..., затем сгенерируем финальную ER-диаграмму прямо в DBeaver (вкладка ER-диаграмма у схемы БД), чтобы убедиться, что все связи отображаются корректно.
+
